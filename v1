@@ -1,0 +1,256 @@
+// Include Libraries
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+#include <SPI.h>
+#include <WiFi.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+
+#define CS   10                     // CS chipsel pin# std.S3 10  (ESP32 5)
+#define DC   14                     // DC datcom  pin# std.S3 14  (ESP32 2)
+#define MOSI 11                     // MOSI data  pin# std.S3 11  (ESP32 23)
+#define CLK  12                     // CLK  clock pin# std.S3 12  (ESP32 18)
+#define RST  13   
+
+Adafruit_ILI9341 tft = Adafruit_ILI9341(CS, DC, MOSI, CLK, RST, MISO); // Software Constructor for TFT ILI9341
+
+// Button Pins
+#define BUTTON_NEXT 0
+#define BUTTON_BACK 1
+#define BUTTON_HOME 2
+#define BUTTON_SELECT 4
+
+// WiFi Info
+const char* ssid = "Engineers Home";
+const char* password = "sky12345";
+
+// Time Setup
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 6*3600, 60000); // GMT+6 Bangladesh
+
+// Dummy Food Icons
+const uint16_t burgerIcon[80*80] PROGMEM = { /* Burger Image */ };
+const uint16_t pizzaIcon[80*80] PROGMEM = { /* Pizza Image */ };
+const uint16_t pastaIcon[80*80] PROGMEM = { /* Pasta Image */ };
+const uint16_t sandwichIcon[80*80] PROGMEM = { /* Sandwich Image */ };
+
+// Food Item Structure
+struct FoodItem {
+  const char* name;
+  int price;
+  const uint16_t* icon;
+};
+
+FoodItem menu[] = {
+  {"Burger", 150, burgerIcon},
+  {"Pizza", 250, pizzaIcon},
+  {"Pasta", 180, pastaIcon},
+  {"Sandwich", 120, sandwichIcon}
+};
+
+const int totalItems = sizeof(menu) / sizeof(menu[0]);
+int currentItem = 0;
+
+// Order Structure
+struct Order {
+  const char* itemName;
+  int quantity;
+  unsigned long startTime;
+};
+
+Order orders[4];
+int orderCount = 0;
+
+// Flags
+bool selectingQuantity = false;
+bool showHome = false;
+
+void setup() {
+  Serial.begin(115200);
+
+  // TFT Setup
+  tft.begin();
+  tft.setRotation(1);
+  tft.fillScreen(ILI9341_BLACK);
+
+  // Button Setup
+  pinMode(BUTTON_NEXT, INPUT_PULLUP);
+  pinMode(BUTTON_BACK, INPUT_PULLUP);
+  pinMode(BUTTON_HOME, INPUT_PULLUP);
+  pinMode(BUTTON_SELECT, INPUT_PULLUP);
+
+  // WiFi Setup
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  tft.setTextColor(ILI9341_GREEN);
+  tft.setTextSize(2);
+  tft.setCursor(10, 200);
+  tft.print("IP: ");
+  tft.println(WiFi.localIP());
+
+  // Time Setup
+  timeClient.begin();
+  timeClient.update();
+
+  showMenuItem(currentItem);
+}
+
+void loop() {
+  timeClient.update();
+  drawTimeDate();
+
+  if (selectingQuantity) {
+    handleQuantitySelection();
+  } else {
+    handleMenuNavigation();
+  }
+}
+
+// Show current Time + Date Top
+void drawTimeDate() {
+  tft.fillRect(0, 0, 320, 30, ILI9341_BLACK);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 5);
+  tft.print(timeClient.getFormattedTime());
+}
+
+// Handle Menu
+void handleMenuNavigation() {
+  if (digitalRead(BUTTON_NEXT) == LOW) {
+    delay(200);
+    currentItem = (currentItem + 1) % totalItems;
+    showMenuItem(currentItem);
+  }
+  if (digitalRead(BUTTON_BACK) == LOW) {
+    delay(200);
+    currentItem = (currentItem - 1 + totalItems) % totalItems;
+    showMenuItem(currentItem);
+  }
+  if (digitalRead(BUTTON_SELECT) == LOW) {
+    delay(200);
+    if (orderCount >= 4) {
+      showMaxOrderScreen();
+    } else {
+      selectingQuantity = true;
+      showQuantitySelection();
+    }
+  }
+  if (digitalRead(BUTTON_HOME) == LOW) {
+    delay(200);
+    showHomeScreen();
+  }
+}
+
+// Handle Quantity
+int quantity = 1;
+void handleQuantitySelection() {
+  if (digitalRead(BUTTON_NEXT) == LOW) {
+    delay(200);
+    quantity++;
+    showQuantitySelection();
+  }
+  if (digitalRead(BUTTON_BACK) == LOW) {
+    delay(200);
+    quantity--;
+    if (quantity < 1) quantity = 1;
+    showQuantitySelection();
+  }
+  if (digitalRead(BUTTON_SELECT) == LOW) {
+    delay(200);
+    selectingQuantity = false;
+    orders[orderCount].itemName = menu[currentItem].name;
+    orders[orderCount].quantity = quantity;
+    orders[orderCount].startTime = millis();
+    orderCount++;
+    showHomeScreen();
+  }
+  if (digitalRead(BUTTON_HOME) == LOW) {
+    delay(200);
+    selectingQuantity = false;
+    showHomeScreen();
+  }
+}
+
+// Show Menu Item
+void showMenuItem(int index) {
+  tft.fillScreen(ILI9341_BLACK);
+  drawTimeDate();
+  tft.drawRGBBitmap(120, 40, menu[index].icon, 80, 80);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(3);
+  tft.setCursor(60, 140);
+  tft.print(menu[index].name);
+  tft.setTextColor(ILI9341_GREEN);
+  tft.setTextSize(2);
+  tft.setCursor(70, 180);
+  tft.print("Price: ");
+  tft.print(menu[index].price);
+  tft.println(" Tk");
+}
+
+// Quantity Selection
+void showQuantitySelection() {
+  tft.fillScreen(ILI9341_BLACK);
+  drawTimeDate();
+  tft.setTextColor(ILI9341_YELLOW);
+  tft.setTextSize(3);
+  tft.setCursor(40, 80);
+  tft.print("Select Quantity");
+  tft.setTextSize(5);
+  tft.setCursor(120, 140);
+  tft.print(quantity);
+}
+
+// Show Home with Active Orders
+void showHomeScreen() {
+  tft.fillScreen(ILI9341_BLACK);
+  drawTimeDate();
+
+  if (orderCount == 0) {
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(60, 120);
+    tft.println("No Active Orders!");
+    return;
+  }
+
+  for (int i = 0; i < orderCount; i++) {
+    unsigned long passed = (millis() - orders[i].startTime) / 1000;
+    int minutes = passed / 60;
+    int seconds = passed % 60;
+
+    tft.setTextColor(ILI9341_CYAN);
+    tft.setTextSize(2);
+    tft.setCursor(10, 40 + i*50);
+    tft.print(orders[i].itemName);
+
+    tft.setTextColor(ILI9341_GREEN);
+    tft.setCursor(180, 40 + i*50);
+    tft.print(orders[i].quantity);
+    tft.print("x");
+
+    tft.setTextColor(ILI9341_YELLOW);
+    tft.setCursor(220, 40 + i*50);
+    tft.printf("%02d:%02d", minutes, seconds);
+  }
+}
+
+// Max Orders Warning
+void showMaxOrderScreen() {
+  tft.fillScreen(ILI9341_BLACK);
+  drawTimeDate();
+  tft.setTextColor(ILI9341_RED);
+  tft.setTextSize(3);
+  tft.setCursor(30, 100);
+  tft.println("Max Orders!");
+  delay(1500);
+  showHomeScreen();
+}
