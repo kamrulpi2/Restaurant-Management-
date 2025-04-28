@@ -1,0 +1,235 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ILI9341.h>
+
+// TFT Pins
+#define CS   10
+#define DC   14
+#define MOSI 11
+#define CLK  12
+#define RST  13
+
+// Button Pins
+#define BUTTON_NEXT 0
+#define BUTTON_BACK 1
+#define BUTTON_HOME 2
+#define BUTTON_SELECT 4
+
+Adafruit_ILI9341 tft = Adafruit_ILI9341(CS, DC, MOSI, CLK, RST);
+
+// Food Menu
+String foods[] = {"Burger", "Pizza", "Pasta", "Sandwich", "Taco"};
+int prices[] = {200, 250, 180, 260, 190};
+int currentFood = 0;
+int quantity = 1;
+
+bool selectingQuantity = false;
+bool cookingStarted = false;
+unsigned long cookingStartTime = 0;
+unsigned long cookingDuration = 15 * 60 * 1000; // 15 minutes
+
+// WiFi Credentials
+const char* ssid = "Engineers Home";
+const char* password = "sky12345";
+
+// Firebase Info
+String firebaseHost = "*****";
+String apiKey = "********";
+
+// Timer variables for Firebase update
+unsigned long lastFirebaseUpdate = 0;
+unsigned long firebaseUpdateInterval = 1000; // update every 1 second
+
+void setup() {
+  Serial.begin(115200);
+
+  // Init TFT
+  tft.begin();
+  tft.setRotation(1);
+  tft.fillScreen(ILI9341_BLACK);
+
+  // Init Buttons
+  pinMode(BUTTON_NEXT, INPUT_PULLUP);
+  pinMode(BUTTON_BACK, INPUT_PULLUP);
+  pinMode(BUTTON_HOME, INPUT_PULLUP);
+  pinMode(BUTTON_SELECT, INPUT_PULLUP);
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.println("Connected to WiFi");
+  
+  showHomeScreen();
+}
+
+void loop() {
+  if (digitalRead(BUTTON_HOME) == LOW) {
+    showHomeScreen();
+    selectingQuantity = false;
+    cookingStarted = false;
+    sendStatusToFirebase(0, 0); // Reset timer
+    delay(300);
+  }
+
+  if (!cookingStarted) {
+    if (!selectingQuantity) {
+      if (digitalRead(BUTTON_NEXT) == LOW) {
+        currentFood = (currentFood + 1) % 5;
+        showMenu();
+        delay(300);
+      }
+      if (digitalRead(BUTTON_BACK) == LOW) {
+        currentFood = (currentFood + 4) % 5; // move back
+        showMenu();
+        delay(300);
+      }
+      if (digitalRead(BUTTON_SELECT) == LOW) {
+        selectingQuantity = true;
+        quantity = 1;
+        showQuantity();
+        delay(300);
+      }
+    } else {
+      if (digitalRead(BUTTON_NEXT) == LOW) {
+        quantity++;
+        showQuantity();
+        delay(300);
+      }
+      if (digitalRead(BUTTON_BACK) == LOW) {
+        if (quantity > 1) quantity--;
+        showQuantity();
+        delay(300);
+      }
+      if (digitalRead(BUTTON_SELECT) == LOW) {
+        cookingStarted = true;
+        cookingStartTime = millis();
+        showCookingScreen();
+        sendStatusToFirebase(15, 0); // Starting with 15:00
+        delay(300);
+      }
+    }
+  } else {
+    updateCookingTimer();
+  }
+}
+
+void showHomeScreen() {
+  tft.fillScreen(ILI9341_BLACK);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(20, 20);
+  tft.println("Smart Food Order");
+  tft.setCursor(20, 60);
+  tft.println("Welcome!");
+}
+
+void showMenu() {
+  tft.fillScreen(ILI9341_BLACK);
+  tft.setTextColor(ILI9341_GREEN);
+  tft.setTextSize(3);
+  tft.setCursor(20, 60);
+  tft.println(foods[currentFood]);
+  
+  tft.setTextColor(ILI9341_YELLOW);
+  tft.setTextSize(2);
+  tft.setCursor(20, 120);
+  tft.print("Price: ");
+  tft.print(prices[currentFood]);
+  tft.println(" Tk");
+}
+
+void showQuantity() {
+  tft.fillScreen(ILI9341_BLACK);
+  tft.setTextColor(ILI9341_CYAN);
+  tft.setTextSize(3);
+  tft.setCursor(20, 60);
+  tft.println("Quantity:");
+  
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(4);
+  tft.setCursor(90, 120);
+  tft.println(quantity);
+}
+
+void showCookingScreen() {
+  tft.fillScreen(ILI9341_BLACK);
+  tft.setTextColor(ILI9341_MAGENTA);
+  tft.setTextSize(2);
+  tft.setCursor(20, 20);
+  tft.println("Cooking:");
+  tft.setCursor(20, 60);
+  tft.println(foods[currentFood]);
+  tft.setCursor(20, 100);
+  tft.print("Qty: ");
+  tft.println(quantity);
+}
+
+void updateCookingTimer() {
+  unsigned long elapsed = millis() - cookingStartTime;
+  if (elapsed > cookingDuration) {
+    cookingStarted = false;
+    showHomeScreen();
+    sendStatusToFirebase(0, 0); // Reset timer after cooking ends
+    return;
+  }
+
+  unsigned long remain = cookingDuration - elapsed;
+  int minutes = (remain / 60000) % 60;
+  int seconds = (remain / 1000) % 60;
+
+  tft.fillRect(20, 140, 200, 60, ILI9341_BLACK);
+  tft.setTextColor(ILI9341_RED);
+  tft.setTextSize(4);
+  tft.setCursor(20, 140);
+  if (minutes < 10) tft.print("0");
+  tft.print(minutes);
+  tft.print(":");
+  if (seconds < 10) tft.print("0");
+  tft.println(seconds);
+
+  // Update timer to Firebase every 1 second
+  if (millis() - lastFirebaseUpdate > firebaseUpdateInterval) {
+    sendStatusToFirebase(minutes, seconds);
+    lastFirebaseUpdate = millis();
+  }
+}
+
+// ==================================
+// Send current food status to Firebase
+// ==================================
+void sendStatusToFirebase(int minutes, int seconds) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected");
+    return;
+  }
+
+  HTTPClient http;
+  String url = firebaseHost + "food_order.json?auth=" + apiKey;
+  http.begin(url);
+
+  String payload = "{";
+  payload += "\"food\":\"" + foods[currentFood] + "\",";
+  payload += "\"quantity\":" + String(quantity) + ",";
+  payload += "\"cookingStarted\":" + String(cookingStarted ? "true" : "false") + ",";
+  payload += "\"minutes\":" + String(minutes) + ",";
+  payload += "\"seconds\":" + String(seconds);
+  payload += "}";
+
+  http.addHeader("Content-Type", "application/json");
+  int httpResponseCode = http.PUT(payload);
+
+  if (httpResponseCode > 0) {
+    String response = http.getString();
+    Serial.println("Firebase response: " + response);
+  } else {
+    Serial.println("Error sending to Firebase: " + String(httpResponseCode));
+  }
+
+  http.end();
+}
